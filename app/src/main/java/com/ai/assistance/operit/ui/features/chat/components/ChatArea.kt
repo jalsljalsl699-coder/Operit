@@ -57,7 +57,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -272,11 +271,13 @@ fun ChatArea(
     val showMessageTokenSpeed = themeSnapshot.showMessageTokenSpeed
     val showMessageTimestamp = themeSnapshot.showMessageTimestamp
     var viewportHeightPx by remember { mutableStateOf(0) }
-    val messageAnchors = remember(currentChatId) { mutableStateMapOf<Long, ChatScrollMessageAnchor>() }
+    // PERF: plain map (not snapshot state). Writes from this map must not invalidate ChatArea,
+    // otherwise every onGloballyPositioned during layout/streaming re-triggers composition.
+    val messageAnchors = remember(currentChatId) { mutableMapOf<Long, ChatScrollMessageAnchor>() }
     var pendingJumpToMessageTimestamp by remember(currentChatId) { mutableStateOf<Long?>(null) }
+    // PERF: only the anchor of the message we are actively jumping to is observable state.
+    var pendingTargetAnchor by remember(currentChatId, pendingJumpToMessageTimestamp) { mutableStateOf<ChatScrollMessageAnchor?>(null) }
     val lastMessage = chatHistory.lastOrNull()
-    val pendingTargetAnchor =
-        pendingJumpToMessageTimestamp?.let { targetTimestamp -> messageAnchors[targetTimestamp] }
     var hasLastAiMessageStartedStreaming by remember(lastMessage?.timestamp) {
         mutableStateOf(lastMessage?.run { sender == "ai" && content.isNotBlank() } == true)
     }
@@ -433,11 +434,15 @@ fun ChatArea(
                     Box(
                         modifier =
                             Modifier.onGloballyPositioned { coordinates ->
-                                messageAnchors[message.timestamp] =
+                                val anchor =
                                     ChatScrollMessageAnchor(
                                         absoluteTopPx = coordinates.positionInParent().y,
                                         heightPx = coordinates.size.height,
                                     )
+                                messageAnchors[message.timestamp] = anchor
+                                if (message.timestamp == pendingJumpToMessageTimestamp) {
+                                    pendingTargetAnchor = anchor
+                                }
                             },
                     ) {
                         MessageItem(
